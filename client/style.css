@@ -1,0 +1,24 @@
+.hidden {
+  display: none;
+}
+
+.button-black {
+  background-color: black;
+  border-color: black;
+}
+
+/* Copies from https://milligram.github.io/css/style.css */
+.wrapper {
+	display: block;
+	overflow: hidden;
+	position: relative;
+	width: 100%;
+}
+.wrapper .container {
+	max-width: 80.0rem;
+}
+.wrapper > .container {
+	padding-bottom: 7.5rem;
+	padding-top: 3.5rem;
+	text-align: center;
+}
