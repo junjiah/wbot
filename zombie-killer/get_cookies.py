@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 # From https://github.com/xchaoinfo/fuck-login/blob/master/003%20weibo.cn/m.weibo.cn.py
-import os
-
-import pickle
-import requests
-import json
 import base64
-import time
+import json
 import math
+import os
+import pickle
 import random
-from PIL import Image
+import time
 from urllib import quote_plus
+
+import requests
+from PIL import Image
 
 agent = 'Mozilla/5.0 (Windows NT 6.2; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/49.0.2623.110 Safari/537.36'
 global headers
@@ -61,7 +61,6 @@ def login_pre(username):
                 f.close()
             im = Image.open("capt.jpg")
             im.show()
-            im.close()
             cha_code = input("请输入验证码\n>")
             return cha_code, capt_json['data']['pcid']
         else:
@@ -104,6 +103,7 @@ def login(username, password, pincode):
     headers["Host"] = "weibo.cn"
     with open('cookies.pkl', 'w') as f:
         pickle.dump(requests.utils.dict_from_cookiejar(session.cookies), f)
+
 
 if __name__ == "__main__":
     username = os.getenv('WEIBO_USERNAME')

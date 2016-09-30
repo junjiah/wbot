@@ -1,17 +1,33 @@
 # coding=utf-8
-import grequests
 import logging
+import os
 import pickle
 import re
-import requests
+import sys
 import time
-
 from contextlib import contextmanager
 
+import peewee
 from selenium import webdriver
 
-# Logging.
-logging.basicConfig(filename='killer.log',level=logging.INFO)
+db = peewee.SqliteDatabase('fan_uids.db')
+db.connect()
+
+
+class UID(peewee.Model):
+    uid = peewee.CharField()
+
+    class Meta:
+        database = db
+
+
+try:
+    db.create_table(UID)
+except peewee.OperationalError:
+    # Table already exists.
+    pass
+
+logging.basicConfig(filename='uid_fetcher.log', level=logging.INFO)
 
 # Load cookies and configure phantomjs.
 cookies = pickle.load(open("cookies.pkl", "rb"))
@@ -25,6 +41,7 @@ cap = {
 for k, v in cap.iteritems():
     webdriver.DesiredCapabilities.PHANTOMJS[k] = v
 
+
 @contextmanager
 def get_driver():
     driver = webdriver.PhantomJS(
@@ -33,28 +50,17 @@ def get_driver():
     yield driver
     driver.quit()
 
-construct_remove_url = \
-    'http://weibo.cn/attention/remove?act=removec&uid={uid}&st={st}'.format
-
 
 class RemoveZombieException(Exception):
     pass
 
 
-def remove_zombies_in_one_page(pager):
+def get_fan_uids_in_a_page(pager):
     remove_links = pager.find_elements_by_link_text(u'移除')
     if not remove_links:
         raise RemoveZombieException('No Remove links')
 
-    # Get mysterious 'st'.
-    link = remove_links[0]
-    href = link.get_attribute('href')
-    st = re.findall('st=(.*$)', href)
-    if not st:
-        raise RemoveZombieException('Mysterious "st" not found in link')
-    st = st[0]
-
-    remove_urls, uids = [], []
+    uids = []
     for link in remove_links:
         href = link.get_attribute('href')
         uid = re.findall('uid=([0-9]*)', href)
@@ -62,36 +68,47 @@ def remove_zombies_in_one_page(pager):
             msg = 'UID not found in link: ' + href
             logging.warning(msg)
             continue
-        uid = uid[0]
-        remove_urls.append(construct_remove_url(uid=uid, st=st))
+        logging.info('Got UID: ' + uid[0])
+        uids.append(uid[0])
+    return uids
 
-    gets = [
-        grequests.get(url, headers={
-            'Cookie': cookies_str
-        }) for url in remove_urls
-    ]
-    resp_list = grequests.map(gets, size=5)  # Throttling.
-    for resp in resp_list:
-        if resp.status_code == requests.codes.ok:
-            logging.info('Succeeded')
-        else:
-            logging.error(
-                'Failed for %s' % (resp.status_code + ':' + resp.text))
+
+uids_to_persist = []
+UIDS_PERSIST_THRESHOLD = 100
+
+
+def persist_uids(uids):
+    global uids_to_persist
+    uids_to_persist.extend(uids)
+    if len(uids_to_persist) >= UIDS_PERSIST_THRESHOLD:
+        d = [{'uid': uid} for uid in uids_to_persist]
+        with db.atomic():
+            UID.insert_many(d).execute()
+        logging.info('Persisted %d UIDs' % len(uids_to_persist))
+        uids_to_persist = []
 
 
 if __name__ == '__main__':
-    follower_url = "http://weibo.cn/3205389480/fans?rightmod=1&wvr=6"
+    my_uid = os.getenv('WEIBO_UID')
+    if not my_uid:
+        logging.error('No UID provided')
+        sys.exit(1)
 
-    PAGE_NUM = 10
+    follower_url = 'http://weibo.cn/{}/fans?rightmod=1&wvr=6'.format(my_uid)
+
+    PAGE_NUM = 101
     FIND_NEXT_RETRY = 3
+
+    uids = []
 
     url = follower_url
     for i in range(PAGE_NUM):
         with get_driver() as pager:
             pager.get(url)
-
             try:
-                remove_zombies_in_one_page(pager)
+                uids_in_page = get_fan_uids_in_a_page(pager)
+                if uids_in_page:
+                    persist_uids(uids_in_page)
             except RemoveZombieException as e:
                 logging.exception(unicode(e))
 
@@ -112,5 +129,9 @@ if __name__ == '__main__':
                     break
             else:
                 msg = 'Failed to find next page for %d times, exit' \
-                    % FIND_NEXT_RETRY
-                raise Exception(msg)
+                      % FIND_NEXT_RETRY
+                break
+
+    # Persist remaining list of UIDs.
+    with db.atomic():
+        UID.insert_many([{'uid': uid} for uid in uids_to_persist]).execute()
