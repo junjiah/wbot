@@ -1,6 +1,9 @@
 *.log
-*.pkl
 .idea
 *.db
+*.pyc
 
 phantomjs
+
+data/
+log/

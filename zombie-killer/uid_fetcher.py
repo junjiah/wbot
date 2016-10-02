@@ -3,34 +3,30 @@ import logging
 import os
 import pickle
 import re
-import sys
+import sched
 import time
 from contextlib import contextmanager
 
-import peewee
 from selenium import webdriver
 
-db = peewee.SqliteDatabase('fan_uids.db')
-db.connect()
+from model import Follower
+
+if not Follower.table_exists():
+    Follower.create_table()
+
+FORMAT = '%(asctime)-15s %(message)s'
+logging.basicConfig(
+    filename='log/uid_fetcher.log', level=logging.INFO, format=FORMAT)
+# Suppress other logging.
+for k in logging.Logger.manager.loggerDict:
+    logging.getLogger(k).setLevel(logging.WARNING)
 
 
-class UID(peewee.Model):
-    uid = peewee.CharField()
-
-    class Meta:
-        database = db
-
-
-try:
-    db.create_table(UID)
-except peewee.OperationalError:
-    # Table already exists.
-    pass
-
-logging.basicConfig(filename='uid_fetcher.log', level=logging.INFO)
+# Fail immediately if not provided.
+my_uid = os.environ['WEIBO_UID']
 
 # Load cookies and configure phantomjs.
-cookies = pickle.load(open("cookies.pkl", "rb"))
+cookies = pickle.load(open('data/cookies.pkl', 'rb'))
 cookies_str = ';'.join('%s=%s' % (name, val) for name, val in cookies.items())
 cap = {
     'phantomjs.page.settings.resourceTimeout': 1000,
@@ -43,19 +39,29 @@ for k, v in cap.iteritems():
 
 
 @contextmanager
-def get_driver():
-    driver = webdriver.PhantomJS(
-        executable_path="./phantomjs")
-    driver.set_window_size(1120, 1000000)
-    yield driver
-    driver.quit()
+def get_pager():
+    pager = webdriver.PhantomJS(
+        executable_path='./phantomjs')
+    pager.set_window_size(1120, 1000000)
+    yield pager
+    pager.quit()
 
 
 class RemoveZombieException(Exception):
     pass
 
 
-def get_fan_uids_in_a_page(pager):
+# A token used by Sina for follower removal operation.
+# Loaded from follower page, then pickle it to be used by other scripts.
+st = None
+
+UID_PATTERN = re.compile('uid=([0-9]*)')
+ST_PATTERN = re.compile('st=(.*$)')
+SCHEDULE_INTERVAL = 60 * 10 * 2  # 20 min.
+
+
+def get_follower_uids_in_a_page(pager):
+    global st
     remove_links = pager.find_elements_by_link_text(u'移除')
     if not remove_links:
         raise RemoveZombieException('No Remove links')
@@ -63,56 +69,54 @@ def get_fan_uids_in_a_page(pager):
     uids = []
     for link in remove_links:
         href = link.get_attribute('href')
-        uid = re.findall('uid=([0-9]*)', href)
+        curr_st = ST_PATTERN.search(href)
+        # Update st if found and different from before.
+        if curr_st:
+            curr_st = curr_st.groups()[0]
+            if curr_st != st:
+                logging.info('Update st from %s to %s' % (st, curr_st))
+                st = curr_st
+                with open('data/st.pkl', 'w') as f:
+                    pickle.dump(st, f)
+
+        uid = UID_PATTERN.search(href)
         if not uid:
-            msg = 'UID not found in link: ' + href
-            logging.warning(msg)
+            logging.warning('UID not found in link: ' + href)
             continue
-        logging.info('Got UID: ' + uid[0])
-        uids.append(uid[0])
+        else:
+            uid = uid.groups()[0]
+        logging.info('Got UID: ' + uid)
+        uids.append(uid)
     return uids
 
 
-uids_to_persist = []
-UIDS_PERSIST_THRESHOLD = 100
-
-
-def persist_uids(uids):
-    global uids_to_persist
-    uids_to_persist.extend(uids)
-    if len(uids_to_persist) >= UIDS_PERSIST_THRESHOLD:
-        d = [{'uid': uid} for uid in uids_to_persist]
-        with db.atomic():
-            UID.insert_many(d).execute()
-        logging.info('Persisted %d UIDs' % len(uids_to_persist))
-        uids_to_persist = []
-
-
-if __name__ == '__main__':
-    my_uid = os.getenv('WEIBO_UID')
-    if not my_uid:
-        logging.error('No UID provided')
-        sys.exit(1)
-
+def fetch_uids_from_weibo_cn(scheduler):
+    # Params.
+    global my_uid
     follower_url = 'http://weibo.cn/{}/fans?rightmod=1&wvr=6'.format(my_uid)
+    page_num = 101
+    find_next_retry = 3
 
-    PAGE_NUM = 101
-    FIND_NEXT_RETRY = 3
-
-    uids = []
-
+    uids, persist_thresh = [], 100
     url = follower_url
-    for i in range(PAGE_NUM):
-        with get_driver() as pager:
+    for i in xrange(page_num):
+        with get_pager() as pager:
             pager.get(url)
             try:
-                uids_in_page = get_fan_uids_in_a_page(pager)
+                # Remember the following function also update 'st' token which
+                # would be used to to remove followers.
+                uids_in_page = get_follower_uids_in_a_page(pager)
                 if uids_in_page:
-                    persist_uids(uids_in_page)
-            except RemoveZombieException as e:
-                logging.exception(unicode(e))
+                    uids.extend(uids_in_page)
 
-            for _ in range(FIND_NEXT_RETRY):
+                if len(uids) >= persist_thresh:
+                    Follower.save_uids(uids)
+                    logging.info('Persisted %d uids' % len(uids))
+                    uids = []
+            except RemoveZombieException as e:
+                logging.warn(unicode(e))
+
+            for _ in range(find_next_retry):
                 try:
                     links = pager.find_elements_by_link_text(u'下页')
                     if not links:
@@ -121,7 +125,7 @@ if __name__ == '__main__':
                     # Set next page URL.
                     url = next_page.get_attribute('href')
                 except Exception as e:
-                    logging.exception(unicode(e))
+                    logging.warn(unicode(e))
                     logging.info('Retry after a second')
                     time.sleep(1)
                 else:
@@ -129,9 +133,24 @@ if __name__ == '__main__':
                     break
             else:
                 msg = 'Failed to find next page for %d times, exit' \
-                      % FIND_NEXT_RETRY
+                      % find_next_retry
+                logging.warn(msg)
                 break
 
     # Persist remaining list of UIDs.
-    with db.atomic():
-        UID.insert_many([{'uid': uid} for uid in uids_to_persist]).execute()
+    if uids:
+        logging.info('Persisted %d uids' % len(uids))
+        Follower.save_uids(uids)
+
+    # Schedule next task.
+    logging.info('Schedule next fetching')
+    scheduler.enter(
+        SCHEDULE_INTERVAL, 1, fetch_uids_from_weibo_cn, (scheduler,))
+
+
+if __name__ == '__main__':
+    # Schedule the job.
+    s = sched.scheduler(time.time, time.sleep)
+    logging.info('Start first fetching')
+    s.enter(0, 1, fetch_uids_from_weibo_cn, (s,))
+    s.run()
