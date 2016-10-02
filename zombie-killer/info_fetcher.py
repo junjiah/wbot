@@ -13,6 +13,13 @@ from model import Follower
 if not Follower.table_exists():
     Follower.create_table()
 
+FORMAT = '%(asctime)-15s %(message)s'
+logging.basicConfig(
+    filename='log/info_fetcher.log', level=logging.INFO, format=FORMAT)
+# Suppress other logging.
+for k in logging.Logger.manager.loggerDict:
+    logging.getLogger(k).setLevel(logging.WARNING)
+
 # Load cookies.
 cookies = pickle.load(open('data/cookies.pkl', 'rb'))
 cookies_str = ';'.join('%s=%s' % (name, val) for name, val in cookies.items())
@@ -24,6 +31,7 @@ HEADERS = {
 WEIBO_PATTERN = u'微博\[(\d+)\]'
 FOLLOWER_PATTERN = u'粉丝\[(\d+)\]'
 SCHEDULE_INTERVAL = 60 * 5  # 5 min.
+CONCURRENT_CONN = 15
 
 
 def fetch_follower_info(scheduler):
@@ -31,9 +39,8 @@ def fetch_follower_info(scheduler):
     info = namedtuple('Info', ['uid', 'weibo_count', 'follower_count'])
     if uids:
         follower_info_list, persist_thresh = [], 100
-        concurrent_conn = 15
-        for i in range(0, len(uids), concurrent_conn):
-            sub_uid_list = uids[i:i + concurrent_conn]
+        for i in range(0, len(uids), CONCURRENT_CONN):
+            sub_uid_list = uids[i:i + CONCURRENT_CONN]
             concurrent_reqs = [
                 grequests.get(info_url(uid), headers=HEADERS)
                 for uid in sub_uid_list
@@ -58,6 +65,8 @@ def fetch_follower_info(scheduler):
                             logging.info('Persisted %d follower info entries' %
                                          len(follower_info_list))
                             follower_info_list = []
+                    else:
+                        logging.warn('Failed to get info of user %s' % uid)
             except Exception:
                 logging.exception('Exception for retrieving user info')
                 continue

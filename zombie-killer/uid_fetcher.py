@@ -17,6 +17,13 @@ if not Follower.table_exists():
 # Fail immediately if not provided.
 my_uid = os.environ['WEIBO_UID']
 
+FORMAT = '%(asctime)-15s %(message)s'
+logging.basicConfig(
+    filename='log/uid_fetcher.log', level=logging.INFO, format=FORMAT)
+# Suppress other logging.
+for k in logging.Logger.manager.loggerDict:
+    logging.getLogger(k).setLevel(logging.WARNING)
+
 # Load cookies and configure phantomjs.
 cookies = pickle.load(open('data/cookies.pkl', 'rb'))
 cookies_str = ';'.join('%s=%s' % (name, val) for name, val in cookies.items())

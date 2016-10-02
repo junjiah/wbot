@@ -2,13 +2,6 @@ import logging
 
 import peewee
 
-FORMAT = '%(asctime)-15s %(message)s'
-logging.basicConfig(
-    filename='log/zombie-killer.log', level=logging.INFO, format=FORMAT)
-# Suppress other logging.
-for k in logging.Logger.manager.loggerDict:
-    logging.getLogger(k).setLevel(logging.WARNING)
-
 db = peewee.SqliteDatabase('data/followers.db')
 
 
@@ -63,3 +56,27 @@ class Follower(peewee.Model):
     def get_unfilled_uids(cls):
         rows = cls.select(cls.uid).where(cls.state == cls.State.NEW)
         return [row.uid for row in rows]
+
+    @classmethod
+    def get_zombie_uids(cls, limit):
+        rows = cls.select(cls.uid).where(
+            cls.state == cls.State.FILLED, cls.weibo_count == 0,
+            cls.follower_count <= 1)
+        return [row.uid for row in rows.limit(limit)]
+
+    @classmethod
+    def confirm_uid_deleted(cls, uids):
+        # type: (list[str]) -> None
+        success, failure = 0, 0
+        with db.atomic():
+            for uid in uids:
+                try:
+                    row = cls.get(cls.uid == uid)
+                    row.state = cls.State.DELETED
+                    row.save()
+                    success += 1
+                except cls.DoesNotExist:
+                    failure += 1
+                    continue
+        logging.info(
+            'Updated state to delete: %d, failed: %d' % (success, failure))
