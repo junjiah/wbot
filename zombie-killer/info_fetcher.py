@@ -2,114 +2,83 @@
 import logging
 import pickle
 import re
+import sched
+from collections import namedtuple
 
 import grequests
-import peewee
-import sys
+import time
 
-info_db = peewee.SqliteDatabase('fan_info.db')
-info_db.connect()
-uid_db = peewee.SqliteDatabase('fan_uids.db')
-uid_db.connect()
+from model import Follower
 
-
-class UID(peewee.Model):
-    uid = peewee.CharField()
-
-    class Meta:
-        database = uid_db
-
-
-class FanInfo(peewee.Model):
-    uid = peewee.CharField()
-    weibo_count = peewee.IntegerField()
-    follower_count = peewee.IntegerField()
-
-    class Meta:
-        database = info_db
-
-
-try:
-    info_db.create_table(FanInfo)
-except peewee.OperationalError:
-    # Table already exists.
-    pass
-
-logging.basicConfig(filename='info_fetcher.log', level=logging.INFO)
+if not Follower.table_exists():
+    Follower.create_table()
 
 # Load cookies.
-cookies = pickle.load(open("cookies.pkl", "rb"))
+cookies = pickle.load(open('data/cookies.pkl', 'rb'))
 cookies_str = ';'.join('%s=%s' % (name, val) for name, val in cookies.items())
+info_url = 'http://weibo.cn/u/{}'.format
 
 HEADERS = {
     'Cookie': cookies_str
 }
-
 WEIBO_PATTERN = u'微博\[(\d+)\]'
 FOLLOWER_PATTERN = u'粉丝\[(\d+)\]'
+SCHEDULE_INTERVAL = 60 * 5  # 5 min.
 
 
-def get_uids(source):
-    if source == 'db':
-        return [uid.uid for uid in UID.select()]
+def fetch_follower_info(scheduler):
+    uids = Follower.get_unfilled_uids()
+    info = namedtuple('Info', ['uid', 'weibo_count', 'follower_count'])
+    if uids:
+        follower_info_list, persist_thresh = [], 100
+        concurrent_conn = 15
+        for i in range(0, len(uids), concurrent_conn):
+            sub_uid_list = uids[i:i + concurrent_conn]
+            concurrent_reqs = [
+                grequests.get(info_url(uid), headers=HEADERS)
+                for uid in sub_uid_list
+            ]
+            resp_list = grequests.map(concurrent_reqs)
 
-    # Suppose it's a file.
-    with open(source, 'r') as f:
-        uids = map(str.strip, f.readlines())
-    return uids
+            try:
+                for uid, resp in zip(sub_uid_list, resp_list):
+                    matches = re.findall(
+                        u'%s.*%s' % (WEIBO_PATTERN, FOLLOWER_PATTERN), resp.text)
+                    if matches:
+                        weibo_cnt, follower_cnt = map(int, matches[0])
 
+                        follower_info_list.append(info(
+                            uid, weibo_cnt, follower_cnt))
+                        logging.info(
+                            '%s Weibo Count: %d, Follower Count: %d' % (
+                                uid, weibo_cnt, follower_cnt))
 
-def info_url(uid):
-    return 'http://weibo.cn/u/{}'.format(uid)
+                        if len(follower_info_list) > persist_thresh:
+                            Follower.save_follower_info(follower_info_list)
+                            logging.info('Persisted %d follower info entries' %
+                                         len(follower_info_list))
+                            follower_info_list = []
+            except Exception:
+                logging.exception('Exception for retrieving user info')
+                continue
 
+        # Persist remaining list of info.
+        if follower_info_list:
+            Follower.save_follower_info(follower_info_list)
+            logging.info('Persisted %d follower info entries' %
+                         len(follower_info_list))
+    else:
+        logging.error('No UIDs provided. Wait for next time')
 
-info_to_persist = []
-INFO_PERSIST_THRESHOLD = 100
-
-
-def persist_fan_info(info):
-    global info_to_persist
-    info_to_persist.append(info)
-    if len(info_to_persist) >= INFO_PERSIST_THRESHOLD:
-        with info_db.atomic():
-            FanInfo.insert_many(info_to_persist).execute()
-        logging.info('Persisted info for %d user(s)' % len(info_to_persist))
-        info_to_persist = []
+    # Schedule next task.
+    logging.info('Schedule next fetching')
+    scheduler.enter(
+        SCHEDULE_INTERVAL, 1, fetch_follower_info, (scheduler,))
 
 
 if __name__ == '__main__':
-    uids = get_uids('db')
-    if not uids:
-        logging.error('No UIDs provided. Exit')
-        sys.exit(1)
-
-    CONCURRENT_CONNECTION_NUM = 20
-    for i in range(0, len(uids), CONCURRENT_CONNECTION_NUM):
-        sub_uid_list = uids[i:i+CONCURRENT_CONNECTION_NUM]
-        concurrent_reqs = [
-            grequests.get(info_url(uid), headers=HEADERS)
-            for uid in sub_uid_list
-        ]
-        resp_list = grequests.map(concurrent_reqs)
-
-        try:
-            for uid, resp in zip(sub_uid_list, resp_list):
-                matches = re.findall(
-                    u'%s.*%s' % (WEIBO_PATTERN, FOLLOWER_PATTERN), resp.text)
-                if matches:
-                    weibo_cnt, follower_cnt = map(int, matches[0])
-                    persist_fan_info({
-                        'uid': uid,
-                        'weibo_count': weibo_cnt,
-                        'follower_count': follower_cnt
-                    })
-                    logging.info(
-                        '%s Weibo Count: %d, Follower Count: %d' % (
-                            uid, weibo_cnt, follower_cnt))
-        except Exception:
-            logging.exception('Exception for retrieving user info')
-            continue
-
-    # Persist remaining list of info.
-    with info_db.atomic():
-        FanInfo.insert_many(info_to_persist).execute()
+    # Schedule the job.
+    s = sched.scheduler(time.time, time.sleep)
+    logging.info('Start first fetching')
+    s.enter(0, 1, fetch_follower_info, (s,))
+    s.run()

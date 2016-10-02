@@ -14,14 +14,6 @@ from model import Follower
 if not Follower.table_exists():
     Follower.create_table()
 
-FORMAT = '%(asctime)-15s %(message)s'
-logging.basicConfig(
-    filename='log/uid_fetcher.log', level=logging.INFO, format=FORMAT)
-# Suppress other logging.
-for k in logging.Logger.manager.loggerDict:
-    logging.getLogger(k).setLevel(logging.WARNING)
-
-
 # Fail immediately if not provided.
 my_uid = os.environ['WEIBO_UID']
 
@@ -89,6 +81,13 @@ def get_follower_uids_in_a_page(pager):
         uids.append(uid)
     return uids
 
+#      __      _              _       _          _     _       _
+#     / _\ ___| |__   ___  __| |_   _| | ___  __| |   (_) ___ | |__  ___
+#     \ \ / __| '_ \ / _ \/ _` | | | | |/ _ \/ _` |   | |/ _ \| '_ \/ __|
+#     _\ \ (__| | | |  __/ (_| | |_| | |  __/ (_| |   | | (_) | |_) \__ \
+#     \__/\___|_| |_|\___|\__,_|\__,_|_|\___|\__,_|  _/ |\___/|_.__/|___/
+#                                                   |__/
+
 
 def fetch_uids_from_weibo_cn(scheduler):
     # Params.
@@ -139,8 +138,8 @@ def fetch_uids_from_weibo_cn(scheduler):
 
     # Persist remaining list of UIDs.
     if uids:
-        logging.info('Persisted %d uids' % len(uids))
         Follower.save_uids(uids)
+        logging.info('Persisted %d uids' % len(uids))
 
     # Schedule next task.
     logging.info('Schedule next fetching')
