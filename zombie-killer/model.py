@@ -26,12 +26,25 @@ class Follower(peewee.Model):
     @classmethod
     def save_uids(cls, uids):
         # type: (list[str]) -> None
-        total_created = 0
+        total_created, total_updated = 0, 0
         with db.atomic():
             for uid in uids:
-                _, created = cls.create_or_get(uid=uid, state=cls.State.NEW)
-                total_created += 1 if created else 0
-        logging.info('Total created: %d' % total_created)
+                f, created = cls.create_or_get(uid=uid, state=cls.State.NEW)
+                if created:
+                    total_created += 1
+                else:
+                    # Already have the data, but re-followed.
+                    if f.weibo_count is not None:
+                        # No need to re-fetch info.
+                        f.state = cls.State.FILLED
+                    else:
+                        f.state = cls.State.NEW
+                    f.save()
+                    total_updated += 1
+
+        logging.info(
+            'Total created: %d, total updated: %d' %
+            (total_created, total_updated))
 
     @classmethod
     def save_follower_info(cls, info_list):

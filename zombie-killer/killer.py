@@ -2,7 +2,6 @@
 import logging
 import pickle
 import sched
-from itertools import izip
 
 import grequests
 import time
@@ -56,10 +55,17 @@ def kill_zombies(scheduler):
             ]
             resp_list = grequests.map(concurrent_reqs)
 
-            deleted_uids = [
-                uid for uid, resp in izip(sub_uid_list, resp_list)
-                if resp.status_code == 200
-            ]
+            deleted_uids = []
+            for uid, resp in zip(sub_uid_list, resp_list):
+                if not resp:
+                    logging.warn('None response, ignore')
+                if resp.status_code == 302:
+                    deleted_uids.append(uid)
+                    logging.info('Deleted %s' % uid)
+                else:
+                    logging.warn('Failed to delete %s because of %s' %
+                                 (uid, resp.status_code))
+
             # Record back to DB about deleted UIDs.
             if deleted_uids:
                 Follower.confirm_uid_deleted(deleted_uids)

@@ -56,7 +56,7 @@ st = None
 
 UID_PATTERN = re.compile('uid=([0-9]*)')
 ST_PATTERN = re.compile('st=(.*$)')
-SCHEDULE_INTERVAL = 60 * 10 * 2  # 20 min.
+SCHEDULE_INTERVAL = 60 * 2  # 2 min.
 
 
 def get_follower_uids_in_a_page(pager):
