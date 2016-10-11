@@ -21,49 +21,56 @@ class Follower(peewee.Model):
         NEW = 'new'  # Only has UID, no info populated.
         FILLED = 'filled'  # Info populated, but didn't go thorough analysis.
         DELETED = 'deleted'  # Already deleted.
+        # TODO: Not used for now.
         CLEAR = 'clear'  # Analyzed and decided to keep.
 
     @classmethod
     def save_uids(cls, uids):
         # type: (list[str]) -> None
         total_created, total_updated = 0, 0
-        with db.atomic():
-            for uid in uids:
-                f, created = cls.create_or_get(uid=uid, state=cls.State.NEW)
-                if created:
-                    total_created += 1
-                else:
-                    # Already have the data, but re-followed.
-                    if f.weibo_count is not None:
-                        # No need to re-fetch info.
-                        f.state = cls.State.FILLED
+        try:
+            with db.atomic():
+                for uid in uids:
+                    f, created = cls.create_or_get(uid=uid, state=cls.State.NEW)
+                    if created:
+                        total_created += 1
                     else:
-                        f.state = cls.State.NEW
-                    f.save()
-                    total_updated += 1
+                        # Already have the data, but re-followed.
+                        if f.weibo_count is not None:
+                            # No need to re-fetch info.
+                            f.state = cls.State.FILLED
+                        else:
+                            f.state = cls.State.NEW
+                        f.save()
+                        total_updated += 1
 
-        logging.info(
-            'Total created: %d, total updated: %d' %
-            (total_created, total_updated))
+            logging.info(
+                'Total created: %d, total updated: %d' %
+                (total_created, total_updated))
+        except Exception:
+            logging.exception('Failed to update db')
 
     @classmethod
     def save_follower_info(cls, info_list):
         # type: (list[{uid, weibo_count, follower_count}]) -> None
         total_created, total_updated = 0, 0
-        with db.atomic():
-            for uid, weibo_count, follower_count in info_list:
-                f, created = cls.get_or_create(uid=uid)
-                if created:
-                    total_created += 1
-                else:
-                    total_updated += 1
-                f.state = cls.State.FILLED
-                f.weibo_count = weibo_count
-                f.follower_count = follower_count
-                f.save()
-        logging.info(
-            'Total created: %d, total updated: %d' %
-            (total_created, total_updated))
+        try:
+            with db.atomic():
+                for uid, weibo_count, follower_count in info_list:
+                    f, created = cls.get_or_create(uid=uid)
+                    if created:
+                        total_created += 1
+                    else:
+                        total_updated += 1
+                    f.state = cls.State.FILLED
+                    f.weibo_count = weibo_count
+                    f.follower_count = follower_count
+                    f.save()
+            logging.info(
+                'Total created: %d, total updated: %d' %
+                (total_created, total_updated))
+        except Exception:
+            logging.exception('Failed to update db')
 
     @classmethod
     def get_unfilled_uids(cls):
@@ -81,15 +88,18 @@ class Follower(peewee.Model):
     def confirm_uid_deleted(cls, uids):
         # type: (list[str]) -> None
         success, failure = 0, 0
-        with db.atomic():
-            for uid in uids:
-                try:
-                    row = cls.get(cls.uid == uid)
-                    row.state = cls.State.DELETED
-                    row.save()
-                    success += 1
-                except cls.DoesNotExist:
-                    failure += 1
-                    continue
-        logging.info(
-            'Updated state to delete: %d, failed: %d' % (success, failure))
+        try:
+            with db.atomic():
+                for uid in uids:
+                    try:
+                        row = cls.get(cls.uid == uid)
+                        row.state = cls.State.DELETED
+                        row.save()
+                        success += 1
+                    except cls.DoesNotExist:
+                        failure += 1
+                        continue
+            logging.info(
+                'Updated state to delete: %d, failed: %d' % (success, failure))
+        except Exception:
+            logging.exception('Failed to update db')
