@@ -12,6 +12,7 @@ import org.codehaus.jackson.map.ObjectMapper;
 import java.io.File;
 import java.io.IOException;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
@@ -71,24 +72,23 @@ public class ZombieFollowerRetriever {
     ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
     Runnable task = () -> {
       Friendships friendships = new Friendships(accessToken);
-      String[] ids;
+      Optional<String[]> ids = Optional.empty();
 
       try {
         UserWapper users = friendships.getFollowersById(uid);
         int total = (int) users.getTotalNumber();
         System.out.println("Total follower: " + total);
 
-        // Randomize cursor to be between 0 ~ size - #to_be_fetched.
-        int cursor = ThreadLocalRandom.current().nextInt(total - followersToRetrieve);
-        System.out.println("Randomized cursor: " + cursor);
-        ids = friendships.getFollowersIdsById(uid, followersToRetrieve, 0);
-        System.out.println("Fetched follower: " + ids.length);
+        String[] uids = friendships.getFollowersIdsById(uid, followersToRetrieve, 0);
+        System.out.println("Fetched follower: " + uids.length);
+
+        ids = Optional.of(uids);
       } catch (WeiboException e) {
         e.printStackTrace();
         return;
       }
 
-      FollowerModel.insertFollowerIDs(ids);
+      ids.ifPresent(FollowerModel::insertFollowerIDs);
     };
     executor.scheduleWithFixedDelay(task, 0, scheduledIntervalInMinutes, TimeUnit.MINUTES);
   }
